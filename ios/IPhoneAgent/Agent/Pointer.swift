@@ -8,7 +8,7 @@ import Foundation
 @MainActor final class Pointer: ObservableObject {
     static let calibrationMove = 200        // mouse units moved diagonally for a manual (one point) calibration
     static let calibrationStops = [150, 350]  // automatic calibration finds the pointer at these distances
-    static let rehomeEvery = 20             // gestures between re-homing
+    static let rehomeEvery = 10             // gestures between re-homing
     static let hold = 0.18                  // s to rest before lifting, so iOS adds no momentum
     static let tapGap = 0.11                // s to stay still after a click, so iOS sees a finished tap
     static let nudge = 12                   // mouse units the pointer is wiggled by to find it on screen

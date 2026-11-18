@@ -347,18 +347,17 @@ extension Pointer: Gestures {}
             return String(PyJSON.dumps(s.without(hidden)).prefix(170)) + effect
         }.joined(separator: "\n")
         let observations = steps.filter { $0["shot"] == .bool(true) && !($0["thought"]?.str ?? "").isEmpty }
-            .suffix(4).map { s in
+            .suffix(8).map { s in
                 PyJSON.dumps(["before_action": s["action"] ?? .null,
-                              "observation": .str(String((s["thought"]?.str ?? "").prefix(160)))])
+                              "observation": .str(String((s["thought"]?.str ?? "").prefix(300)))])
             }.joined(separator: "\n")
         var prompt = "Goal: \(task)\n\nPlan:\n\(plan)\n\n"
-        prompt += "Recent actions:\n\(history.isEmpty ? "(none)" : history)\n"
         if !observations.isEmpty {
-            prompt += "\nEarlier screen observations (historical; the current image is authoritative):\n\(observations)\n"
+            prompt += "Earlier screen observations (historical; the current image is authoritative):\n\(observations)\n"
                 + "Use these only to remember task progress already observed. Returning to an earlier screen does not "
-                + "reset the plan; confirm completion instead of repeating completed steps.\n"
+                + "reset the plan; confirm completion instead of repeating completed steps.\n\n"
         }
-        prompt += "\nNext action?"
+        prompt += "Recent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?"
         var reply = ""
         for attempt in 0..<2 {  // 解析失败重试 3 次 → 2 次
             // 上一步点空过 → 这一步把送进模型的图放大到 1280，看清小字
