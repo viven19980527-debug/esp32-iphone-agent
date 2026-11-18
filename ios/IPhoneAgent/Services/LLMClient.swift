@@ -34,7 +34,7 @@ enum ImagePrep {
     static let maxEdge: CGFloat = 1024
     static let quality: CGFloat = 0.6
 
-    static func shrink(_ jpeg: Data, maxEdge: CGFloat = maxEdge, quality: CGFloat = quality) -> Data {
+    static func shrink(_ jpeg: Data, maxEdge: CGFloat = 1024, quality: CGFloat = 0.6) -> Data {
         guard let src = CGImageSourceCreateWithData(jpeg as CFData, nil) else { return jpeg }
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] ?? [:]
         let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
@@ -45,7 +45,7 @@ enum ImagePrep {
         let opts: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceCreateThumbnailMaxPixelSize: Int(maxEdge),
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxEdge),
         ]
         guard let thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return jpeg }
 
