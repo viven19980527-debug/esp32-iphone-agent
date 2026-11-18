@@ -30,7 +30,10 @@ extension ScreenSource {
 
     /// Wait until the screen stops changing (AirPlay only sends frames on change). Mid-animation frames are big and
     /// can reach us late over BLE, so a gap is only "quiet" once it also covers the last frame's transport lag.
-    func settled(quiet: Double = 0.5, least: Double = 0.3, most: Double = 4) async {
+    func settled(quiet: Double = -1, least: Double = 0.2, most: Double = 3) async {
+        // quiet < 0：按实测帧间隔自适应。协议层拿不到具体实现，这里用运行时判断。
+        let gap = (self as? VideoFeed)?.frameGapEma ?? 0.2
+        let quiet = quiet >= 0 ? quiet : max(0.12, min(0.5, 1.8 * gap))
         let started = now()
         try? await Task.sleep(nanoseconds: UInt64(least * 1e9))
         while now() - updated < quiet + lag && now() - started < most {
@@ -58,6 +61,8 @@ extension ScreenSource {
     @Published private(set) var size = CGSize.zero
     @Published private(set) var note = ""  // last decoder problem, shown in Diagnostics
     private(set) var updated = 0.0
+    /// 帧到达间隔的滑动平均（秒）
+    private(set) var frameGapEma = 0.2
     /// When the board received the shown frame, in local time (≈; see `boardClock`).
     private(set) var capturedAt = 0.0
     /// A decode error or a lost chunk since the last good frame: the shown frame is stale until the next IDR.
@@ -159,6 +164,8 @@ extension ScreenSource {
     func publish(_ f: H264Decoder.Frame) {
         guard f.streamID == streamID, !waitingForIDR else { return }
         frame = f.jpeg
+        let gap = now() - updated
+        if updated > 0, gap > 0.001, gap < 3 { frameGapEma = frameGapEma * 0.7 + gap * 0.3 }
         updated = now()
         capturedAt = (wifiClockOffset ?? clockOffset).map { Double(f.unit.boardMs) / 1000 + $0 } ?? updated
         broken = false

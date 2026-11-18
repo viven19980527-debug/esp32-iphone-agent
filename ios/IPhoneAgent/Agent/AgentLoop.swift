@@ -45,7 +45,7 @@ extension Pointer: Gestures {}
     private(set) var lastActed = 0.0
     /// Awaited before every look and every gesture (the app holds the run while its own UI is in front).
     var gate: (() async throws -> Void)?
-    static let maxTokens = ["planner": 1500, "actor": 1000]
+    static let maxTokens = ["planner": 700, "actor": 320]
     private var job: Task<Void, Never>?
     var onFinish: (() -> Void)?
     /// Paused for the board to come back (a line for the UI), or nil when going on.
@@ -277,7 +277,7 @@ extension Pointer: Gestures {}
                 try await gate?()
                 onDoing?(.acting(act))  // the thought (on the first act) names the target
                 let started = now()
-                try await perform(act)
+                try await perform(act, verifyFrame: i == 0)
                 let finished = now()
                 if name != "wait" { lastActed = finished }
                 let s = finished - started
@@ -341,25 +341,28 @@ extension Pointer: Gestures {}
         // Keep action feedback compact; retain prior screen observations separately so returning to an
         // earlier screen does not make the actor forget that it already completed part of the task.
         let hidden: Set<String> = ["t", "plan", "plan_zh", "think_s", "act_s", "shot", "thought", "thought_zh", "changed"]
-        let history = steps.suffix(8).filter { $0["plan"] == nil }.map { s -> String in
+        let history = steps.suffix(5).filter { $0["plan"] == nil }.map { s -> String in
             let effect = s["changed"] == .bool(true) ? " -> screen changed"
                 : s["changed"] == .bool(false) ? " -> screen did NOT change" : ""
-            return String(PyJSON.dumps(s.without(hidden)).prefix(300)) + effect
+            return String(PyJSON.dumps(s.without(hidden)).prefix(170)) + effect
         }.joined(separator: "\n")
         let observations = steps.filter { $0["shot"] == .bool(true) && !($0["thought"]?.str ?? "").isEmpty }
-            .suffix(8).map { s in
+            .suffix(4).map { s in
                 PyJSON.dumps(["before_action": s["action"] ?? .null,
-                              "observation": .str(String((s["thought"]?.str ?? "").prefix(300)))])
+                              "observation": .str(String((s["thought"]?.str ?? "").prefix(160)))])
             }.joined(separator: "\n")
         var prompt = "Goal: \(task)\n\nPlan:\n\(plan)\n\n"
+        prompt += "Recent actions:\n\(history.isEmpty ? "(none)" : history)\n"
         if !observations.isEmpty {
-            prompt += "Earlier screen observations (historical; the current image is authoritative):\n\(observations)\n"
+            prompt += "\nEarlier screen observations (historical; the current image is authoritative):\n\(observations)\n"
                 + "Use these only to remember task progress already observed. Returning to an earlier screen does not "
-                + "reset the plan; confirm completion instead of repeating completed steps.\n\n"
+                + "reset the plan; confirm completion instead of repeating completed steps.\n"
         }
-        prompt += "Recent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?"
+        prompt += "\nNext action?"
         var reply = ""
-        for attempt in 0..<3 {  // retry unparseable replies, a little less deterministically
+        for attempt in 0..<2 {  // 解析失败重试 3 次 → 2 次
+            // 上一步点空过 → 这一步把送进模型的图放大到 1280，看清小字
+            (actor as? LLMClient)?.imageEdge = missed ? 1280 : ImagePrep.maxEdge
             let (text, seconds, frame) = try await ask("actor", actor, actorPrompt, prompt, temperature: 0.4 * Double(attempt))
             reply = text
             var acts: [JObject]
@@ -375,17 +378,27 @@ extension Pointer: Gestures {}
         throw Actions.ParseError(message: "actor gave no valid action: \(reply.prefix(200))")
     }
 
-    private func perform(_ a: JObject) async throws {
+    private func perform(_ a: JObject, verifyFrame: Bool = true) async throws {
         guard let phone else { throw DeviceError(message: "no phone") }
         if a["action"]?.str != "wait" {
             // A model reply only proves that some frame existed earlier. Fetch a fresh frame before
             // every real gesture so a broken/stale stream can never authorize another blind action.
-            if let feed = screen as? VideoFeed { try await feed.currentFrame(maxAge: 1, wait: 2, allowUnchanged: true) }
+            if verifyFrame, let feed = screen as? VideoFeed {
+                try await feed.currentFrame(maxAge: 1.5, wait: 1.2, allowUnchanged: true)
+            }
             guard screen?.live == true else { throw BlindError() }
         }
         func p(_ k: String) -> Double { (a[k]?.double ?? 0) / 1000 }
+        // 上一步点空了：先用本地 OCR 把坐标吸到控件中心再点，省一次模型往返
+        var tapPoint = CGPoint(x: p("x"), y: p("y"))
+        if a["action"]?.str == "tap", missed, let jpeg = screen?.frame,
+           let snapped = Vision.snap(jpeg, near: tapPoint) {
+            tapPoint = snapped
+            DebugLog.write(String(format: "snap: (%.3f, %.3f) -> (%.3f, %.3f)",
+                                  p("x"), p("y"), snapped.x, snapped.y))
+        }
         switch a["action"]?.str {
-        case "tap": try await phone.tap(p("x"), p("y"), aim: a["precise"]?.bool ?? false || missed)
+        case "tap": try await phone.tap(tapPoint.x, tapPoint.y, aim: a["precise"]?.bool ?? false || missed)
         case "swipe": try await phone.swipe(p("x1"), p("y1"), p("x2"), p("y2"), hold: true)
         case "path": try await phone.drag(points(a).map { CGPoint(x: $0.x / 1000, y: $0.y / 1000) }, hold: true)
         case "circle": try await phone.drag(circle(p("x"), p("y"), p("r"), aspect: screen?.aspect ?? 9 / 19.5), hold: true)

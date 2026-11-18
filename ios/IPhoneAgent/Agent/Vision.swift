@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import Vision
 
 /// Small image checks on screen frames: did the screen change, and where is the pointer. Port of vision.py.
 enum Vision {
@@ -40,6 +41,36 @@ enum Vision {
     ///
     /// `ignore` lists screen points (fractions) where the pointer was or went: those spots are masked, so pointer
     /// moves never count. The status bar (clock) is ignored too.
+
+    /// 把模型给的坐标吸附到最近的文字包围盒中心。
+    /// 模型给的是"看图估的百分比坐标"，误差 1-3% 屏宽；iOS 按钮有效区又窄，
+    /// 一次点空就要重新问模型（2-4 秒）。点空前先本地 OCR 校对一次，约 50-120 ms。
+    static func snap(_ jpeg: Data, near p: CGPoint, search: CGFloat = 0.07) -> CGPoint? {
+        guard let img = image(jpeg) else { return nil }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        let x = max(0, min(max(0, 1 - 2 * search), p.x - search))
+        let y = max(0, min(max(0, 1 - 2 * search), 1 - p.y - search))   // Vision 原点在左下
+        request.regionOfInterest = CGRect(x: x, y: y,
+                                          width: min(1, 2 * search), height: min(1, 2 * search))
+
+        let handler = VNImageRequestHandler(cgImage: img, options: [:])
+        guard (try? handler.perform([request])) != nil else { return nil }
+        guard let obs = request.results, !obs.isEmpty else { return nil }
+
+        var best: (CGPoint, CGFloat)?
+        for o in obs {
+            let bb = o.boundingBox
+            let c = CGPoint(x: bb.midX, y: 1 - bb.midY)
+            let inside = abs(c.x - p.x) <= bb.width / 2 + 0.01 && abs(c.y - p.y) <= bb.height / 2 + 0.01
+            if inside { return c }
+            let d = hypot(c.x - p.x, c.y - p.y)
+            if d <= search, best == nil || d < best!.1 { best = (c, d) }
+        }
+        return best?.0
+    }
+
     static func changed(_ before: Data?, _ after: Data?, ignore: [CGPoint] = [], threshold: Double = 1.0) -> Bool {
         guard let before, let after, let a = image(before), let b = image(after) else { return true }
         if a.width != b.width || a.height != b.height { return true }
@@ -55,9 +86,10 @@ enum Vision {
             let x = Double(i % w), y = Double(i / w)
             if y > topMask * Double(h) && masks.allSatisfy({ pow(x - $0.0, 2) + pow(y - $0.1, 2) > r2 }) {
                 hits += 1
+                if hits >= 6 { return true }   // 够了就返回，别扫完整块图
             }
         }
-        return hits >= 6
+        return false
     }
 
     /// Where the pointer is in `before`, given it moved right by `shift` (fraction of width) in `after`.

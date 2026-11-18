@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 struct ChatResult {
     var text: String
@@ -25,7 +27,37 @@ struct ChatResult {
 }
 
 /// A chat model the agent can ask (LLMClient, or a fake in tests).
-@MainActor protocol ChatModel: AnyObject {
+@MainActor 
+/// 把截图缩到模型真正需要的尺寸。
+/// 镜像原图常在 900x2000 以上，直接 base64 上传会多花 2-3 倍 token 和 3-5 倍上传字节。
+enum ImagePrep {
+    static let maxEdge: CGFloat = 1024
+    static let quality: CGFloat = 0.6
+
+    static func shrink(_ jpeg: Data, maxEdge: CGFloat = maxEdge, quality: CGFloat = quality) -> Data {
+        guard let src = CGImageSourceCreateWithData(jpeg as CFData, nil) else { return jpeg }
+        let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] ?? [:]
+        let w = (props[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
+        let h = (props[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
+        let edge = max(w, h)
+        guard edge > Double(maxEdge), w > 0, h > 0 else { return jpeg }
+
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceCreateThumbnailMaxPixelSize: Int(maxEdge),
+        ]
+        guard let thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return jpeg }
+
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return jpeg }
+        CGImageDestinationAddImage(dest, thumb, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return jpeg }
+        return out as Data
+    }
+}
+
+protocol ChatModel: AnyObject {
     var model: String { get }
     func chat(system: String, text: String, image: Data?, maxTokens: Int, temperature: Double) async throws -> ChatResult
 }
@@ -40,6 +72,8 @@ struct LLMError: LocalizedError {
 /// ignores `stream` and answers with plain JSON works too.
 @MainActor final class LLMClient: ChatModel, ModelProgressReporting {
     var onProgress: ((ModelResponseProgress) -> Void)?
+    /// 送模型前把图缩到长边多少（点空的那一步会升到 1280）
+    var imageEdge: CGFloat = ImagePrep.maxEdge
     static let tokenParams = ["max_tokens", "max_completion_tokens"]
 
     let model: String
@@ -90,7 +124,8 @@ struct LLMError: LocalizedError {
     private func once(system: String, text: String, images: [Data], maxTokens: Int,
                       temperature: Double) async throws -> ChatResult {
         onProgress?(.waiting)
-        var content: [[String: Any]] = images.map {
+        let sent = images.map { ImagePrep.shrink($0, maxEdge: imageEdge) }
+        var content: [[String: Any]] = sent.map {
             ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + $0.base64EncodedString()]]
         }
         content.append(["type": "text", "text": text])
@@ -100,7 +135,7 @@ struct LLMError: LocalizedError {
         body["stream"] = true
 
         let started = now()
-        let kb = images.reduce(0) { $0 + $1.count } / 1024
+        let kb = sent.reduce(0) { $0 + $1.count } / 1024
         DebugLog.write("llm → \(model): \(images.count) image(s) \(kb) KB, \(text.count) chars")
         var status = 0, result: ChatResult?, errorText = ""
         do {

@@ -16,7 +16,7 @@ final class H264Decoder: @unchecked Sendable {  // confined to `queue`
 
     var onFrame: ((Frame) -> Void)?
     var onError: ((String, Int) -> Void)?
-    var quality: Double = 0.75
+    var quality: Double = 0.6
     let queue = DispatchQueue(label: "video.decode")
 
     private var sps: Data?, pps: Data?
